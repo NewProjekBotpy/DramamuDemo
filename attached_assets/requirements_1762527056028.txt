@@ -1,9 +1,0 @@
-fastapi
-uvicorn
-psycopg2-binary
-midtransclient
-gunicorn
-aiohttp
-pyTelegramBotAPI
-supabase
-requests
