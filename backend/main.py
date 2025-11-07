@@ -230,14 +230,23 @@ async def handle_movie_request(request: MovieRequest):
     Validates initData, checks VIP status, sends video via bot.
     """
     try:
-        # Validate Telegram initData
+        # Validate Telegram initData (MANDATORY)
+        if not BOT_TOKEN:
+            raise HTTPException(
+                status_code=500, 
+                detail="Bot not configured. Please contact administrator."
+            )
+        
         user = validate_telegram_init_data(request.init_data)
         if not user:
-            logger.warning(f"Invalid initData for chat_id: {request.chat_id}")
-            # Continue anyway for development, but log warning
+            logger.warning(f"Invalid or missing initData for chat_id: {request.chat_id}")
+            raise HTTPException(
+                status_code=403, 
+                detail="Invalid Telegram authentication. Please open via Telegram bot."
+            )
         
         # Verify user matches chat_id
-        if user and user.get('id') != request.chat_id:
+        if user.get('id') != request.chat_id:
             raise HTTPException(status_code=403, detail="User ID mismatch")
         
         # Check VIP status
