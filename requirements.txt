@@ -10,15 +10,3 @@ pydantic==2.5.3
 pydantic-settings==2.1.0
 slowapi==0.1.9
 httpx~=0.25.2
-aiohttp
-fastapi
-gunicorn
-httpx
-midtransclient
-psycopg2-binary
-pydantic
-pydantic-settings
-python-dotenv
-python-telegram-bot
-slowapi
-uvicorn[standard]
