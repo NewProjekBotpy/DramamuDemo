@@ -1,0 +1,30 @@
+# Render Blueprint untuk Dramamu Bot
+# File ini untuk auto-configure deployment di Render
+
+services:
+  # Web Service untuk FastAPI + Telegram Bot
+  - type: web
+    name: dramamu-backend
+    env: python
+    region: singapore
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: bash start.sh
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: BOT_TOKEN
+        sync: false
+      - key: BOT_USERNAME
+        sync: false
+      - key: DB_HOST
+        sync: false
+      - key: DB_PORT
+        sync: false
+      - key: DB_NAME
+        sync: false
+      - key: DB_USER
+        sync: false
+      - key: DB_PASS
+        sync: false
+    healthCheckPath: /health
