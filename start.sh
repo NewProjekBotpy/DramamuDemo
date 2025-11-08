@@ -1,12 +1,9 @@
 #!/bin/bash
 
-# Start script untuk menjalankan Bot dan FastAPI backend bersamaan di Render
+# Start script untuk menjalankan Bot dan FastAPI backend bersamaan
 # Script ini akan menjalankan keduanya secara parallel
 
 echo "🚀 Starting Dramamu Backend System..."
-
-# Set working directory ke folder yang berisi main.py dan bot.py
-cd "Ini backup/ini yang ada di github" || exit 1
 
 echo "✅ Current directory: $(pwd)"
 echo "📝 Files in directory:"
@@ -21,18 +18,20 @@ echo "   Bot PID: $BOT_PID"
 sleep 2
 
 echo "🔥 Starting FastAPI Backend..."
-# Render menyediakan PORT via environment variable
-# Default ke 8000 jika tidak ada
-PORT=${PORT:-8000}
-echo "   Listening on port: $PORT"
-uvicorn main:app --host 0.0.0.0 --port $PORT &
+# Backend API runs on port 8000
+BACKEND_PORT=8000
+echo "   Listening on port: $BACKEND_PORT"
+uvicorn main:app --host 0.0.0.0 --port $BACKEND_PORT &
 API_PID=$!
 echo "   API PID: $API_PID"
 
 echo ""
 echo "✅ Both services started successfully!"
 echo "🤖 Telegram Bot: Running (PID: $BOT_PID)"
-echo "🔥 FastAPI Backend: http://0.0.0.0:$PORT (PID: $API_PID)"
+echo "🔥 FastAPI Backend: http://0.0.0.0:$BACKEND_PORT (PID: $API_PID)"
+echo ""
+echo "💡 Backend URL: https://$REPLIT_DEV_DOMAIN"
+echo "🧪 Health check: https://$REPLIT_DEV_DOMAIN/health"
 echo ""
 echo "Waiting for processes..."
 
