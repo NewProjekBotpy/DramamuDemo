@@ -9,3 +9,14 @@ pydantic==2.5.1
 python-telegram-bot==20.7
 slowapi==0.1.8
 python-multipart==0.0.6
+aiohttp
+fastapi
+gunicorn
+midtransclient
+psycopg2-binary
+pydantic
+python-multipart
+python-telegram-bot
+requests
+slowapi
+uvicorn
