@@ -3,6 +3,7 @@ import time
 import os
 import secrets
 from datetime import datetime, timedelta
+from typing import Optional
 from fastapi import FastAPI, HTTPException, Request, Depends
 from pydantic import BaseModel, validator
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,13 +14,10 @@ from urllib.parse import parse_qs
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+import httpx
 
-# --- DATA KONEKSI DATABASE ---
-DB_HOST = os.environ.get("DB_HOST")
-DB_PORT = os.environ.get("DB_PORT")
-DB_NAME = os.environ.get("DB_NAME")
-DB_USER = os.environ.get("DB_USER")
-DB_PASS = os.environ.get("DB_PASS")
+# --- DATA KONEKSI DATABASE (REPLIT) ---
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
 # --- INFO MIDTRANS ---
 MIDTRANS_SERVER_KEY = os.environ.get("MIDTRANS_SERVER_KEY")
@@ -32,12 +30,9 @@ BOT_USERNAME = os.environ.get("BOT_USERNAME", "dramamu_bot")
 # Inisialisasi Midtrans
 midtrans_client = midtransclient.Snap(
     is_production=False,
-    server_key=MIDTRANS_SERVER_KEY,
-    client_key=MIDTRANS_CLIENT_KEY
+    server_key=MIDTRANS_SERVER_KEY or "",
+    client_key=MIDTRANS_CLIENT_KEY or ""
 )
-
-# Buat string koneksi
-conn_string = f"dbname='{DB_NAME}' user='{DB_USER}' host='{DB_HOST}' port='{DB_PORT}' password='{DB_PASS}'"
 
 # Buat aplikasi FastAPI dengan rate limiting
 app = FastAPI(title="Dramamu API", version="1.0.0")
@@ -59,7 +54,10 @@ app.add_middleware(
 # Fungsi untuk konek ke DB
 def get_db_connection():
     try:
-        conn = psycopg2.connect(conn_string)
+        if not DATABASE_URL:
+            print("DATABASE_URL tidak tersedia!")
+            return None
+        conn = psycopg2.connect(DATABASE_URL)
         return conn
     except Exception as e:
         print(f"GAGAL KONEK KE DB: {e}")
@@ -118,14 +116,26 @@ def check_vip_status(telegram_id: int) -> bool:
     is_vip = False
     try:
         cur = conn.cursor()
-        cur.execute("SELECT is_vip FROM users WHERE telegram_id = %s;", (telegram_id,))
-        user = cur.fetchone()
 
-        if user and user[0] is True:
-            is_vip = True
-        cur.close()
+        # Gunakan UPSERT untuk hindari race condition
+        cur.execute("""
+            INSERT INTO users (telegram_id, is_vip, created_at) 
+            VALUES (%s, %s, NOW())
+            ON CONFLICT (telegram_id) 
+            DO UPDATE SET telegram_id = EXCLUDED.telegram_id
+            RETURNING is_vip;
+        """, (telegram_id, False))
+
+        result = cur.fetchone()
+        is_vip = result[0] if result else False
+        conn.commit()
+
     except Exception as e:
         print(f"Error cek VIP: {e}")
+        try:
+            conn.rollback()
+        except:
+            pass
     finally:
         try:
             if conn:
@@ -136,12 +146,12 @@ def check_vip_status(telegram_id: int) -> bool:
     return is_vip
 
 # --- AMBIL DETAIL FILM ---
-def get_movie_details(movie_id: int) -> dict:
+def get_movie_details(movie_id: int) -> Optional[dict]:
     conn = get_db_connection()
     if not conn:
         return None
 
-    movie = None
+    movie: Optional[dict] = None
     try:
         cur = conn.cursor()
         cur.execute("SELECT title, video_link, poster_url FROM movies WHERE id = %s;", (movie_id,))
@@ -195,14 +205,19 @@ async def root():
 async def health_check():
     """Health check endpoint"""
     db_status = "healthy"
+    conn = None
     try:
         conn = get_db_connection()
-        if conn:
-            conn.close()
-        else:
+        if not conn:
             db_status = "unhealthy"
     except:
         db_status = "unhealthy"
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except:
+            pass
 
     return {
         "status": "healthy",
@@ -226,7 +241,6 @@ async def get_referral_stats(request: Request, telegram_id: int):
         )
         user_stats = cur.fetchone()
         cur.close()
-        conn.close()
 
         if user_stats:
             return {
@@ -243,6 +257,12 @@ async def get_referral_stats(request: Request, telegram_id: int):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except:
+            pass
 
 # --- AMBIL DAFTAR FILM ---
 @app.get("/api/v1/movies")
@@ -257,7 +277,6 @@ async def get_all_movies(request: Request):
         cur.execute("SELECT id, title, description, poster_url, video_link FROM movies WHERE active = true ORDER BY created_at DESC;")
         movies_raw = cur.fetchall()
         cur.close()
-        conn.close()
 
         movies_list = []
         for movie in movies_raw:
@@ -273,6 +292,12 @@ async def get_all_movies(request: Request):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except:
+            pass
 
 # --- CEK STATUS USER ---
 @app.get("/api/v1/user_status/{telegram_id}")
@@ -287,7 +312,6 @@ async def get_user_status(request: Request, telegram_id: int):
         cur.execute("SELECT is_vip FROM users WHERE telegram_id = %s;", (telegram_id,))
         user = cur.fetchone()
         cur.close()
-        conn.close()
 
         if user:
             return {
@@ -304,6 +328,12 @@ async def get_user_status(request: Request, telegram_id: int):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except:
+            pass
 
 # --- CREATE PAYMENT LINK ---
 @app.post("/api/v1/create_payment")
@@ -376,12 +406,18 @@ async def create_payment_link(request: Request, payment_data: PaymentRequest):
         print(f"Error pas bikin token Snap: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# --- HANDLE MOVIE REQUEST DARI MINI APP ---
-@app.post("/api/v1/handle_movie_request")
+# --- SISTEM PELANTARA: TAHAN DATA FILM SAMPAI BOT TERIMA /START ---
+@app.post("/api/v1/hold_movie_data")
 @limiter.limit("30/minute")
-async def handle_movie_request(request: Request, data: dict):
+async def hold_movie_data(request: Request, data: dict):
     """
-    Endpoint untuk menangani request film dari Mini App dengan fallback mechanism
+    ENDPOINT PELANTARA - SISTEM SENDDATA AUTO-TRIGGER:
+    1. Terima data film dari mini app
+    2. Validasi VIP status
+    3. Tahan data di intermediary_queue
+    4. Return transaction_id ke mini app
+    5. Mini app kirim via sendData() → auto-trigger bot
+    6. Bot terima via web_app_data → fetch data → kirim film
     """
     try:
         telegram_id = data.get("chat_id")
@@ -400,7 +436,7 @@ async def handle_movie_request(request: Request, data: dict):
             raise HTTPException(status_code=400, detail="Invalid ID format")
 
         # Verifikasi init_data Telegram
-        if not verify_telegram_init_data(init_data, BOT_TOKEN):
+        if not BOT_TOKEN or not verify_telegram_init_data(init_data, BOT_TOKEN):
             raise HTTPException(status_code=401, detail="Invalid init_data")
 
         # Cek status VIP user
@@ -418,82 +454,165 @@ async def handle_movie_request(request: Request, data: dict):
                 "message": "Movie not found"
             }
 
-        # Simulasikan pengiriman via bot (dalam real implementation, panggil Telegram Bot API)
-        send_success = await simulate_bot_send(telegram_id, movie)
+        # Generate token unik
+        start_token = secrets.token_urlsafe(32)
+        expires_at = datetime.now() + timedelta(minutes=15)
 
-        if send_success:
-            # Log aktivitas sukses
-            conn = get_db_connection()
-            if conn:
-                try:
-                    cur = conn.cursor()
-                    cur.execute(
-                        "INSERT INTO activity_logs (telegram_id, action, movie_id, status, created_at) VALUES (%s, %s, %s, %s, NOW());",
-                        (telegram_id, "watch", movie_id, "success")
-                    )
-                    conn.commit()
-                    cur.close()
-                except Exception as e:
-                    print(f"Error logging activity: {e}")
-                finally:
-                    try:
-                        conn.close()
-                    except:
-                        pass
+        # Simpan data film di pelantara (intermediary_queue)
+        conn = get_db_connection()
+        if not conn:
+            return {
+                "status": "error",
+                "message": "Database connection failed"
+            }
+
+        try:
+            cur = conn.cursor()
+            
+            # Simpan data film dalam format JSONB
+            import json
+            movie_data_json = json.dumps(movie)
+            
+            start_link = f"https://t.me/{BOT_USERNAME}?start={start_token}"
+            
+            cur.execute(
+                """INSERT INTO intermediary_queue 
+                   (telegram_id, movie_id, start_token, movie_data, status, start_link, expires_at) 
+                   VALUES (%s, %s, %s, %s, 'waiting_start', %s, %s);""",
+                (telegram_id, movie_id, start_token, movie_data_json, start_link, expires_at)
+            )
+            conn.commit()
+            cur.close()
+
+            # Log aktivitas
+            try:
+                cur = conn.cursor()
+                cur.execute(
+                    "INSERT INTO activity_logs (telegram_id, action, movie_id, status, created_at) VALUES (%s, %s, %s, %s, NOW());",
+                    (telegram_id, "movie_held_in_queue", movie_id, "waiting_senddata")
+                )
+                conn.commit()
+                cur.close()
+            except Exception as e:
+                print(f"Error logging activity: {e}")
+
+            print(f"✅ Data film ditahan untuk user {telegram_id}, token: {start_token}")
+            print(f"⏳ Menunggu Mini App kirim via sendData()...")
 
             return {
                 "status": "success",
-                "message": "Movie sent successfully"
+                "message": "Data film ditahan, akan otomatis terkirim via sendData",
+                "token": start_token
             }
-        else:
-            # Fallback: buat pending action
-            start_token = secrets.token_urlsafe(32)
-            expires_at = datetime.now() + timedelta(minutes=15)
 
-            conn = get_db_connection()
-            if conn:
-                try:
-                    cur = conn.cursor()
-                    cur.execute(
-                        "INSERT INTO pending_actions (telegram_id, movie_id, start_token, expires_at, status) VALUES (%s, %s, %s, %s, 'pending');",
-                        (telegram_id, movie_id, start_token, expires_at)
-                    )
-                    conn.commit()
-                    cur.close()
-
-                    fallback_link = f"https://t.me/{BOT_USERNAME}?start={start_token}"
-
-                    return {
-                        "status": "need_start",
-                        "link": fallback_link,
-                        "message": "Requires bot start"
-                    }
-                except Exception as e:
-                    print(f"Error creating pending action: {e}")
-                    try:
-                        conn.rollback()
-                    except:
-                        pass
-                    return {
-                        "status": "error",
-                        "message": "Failed to create fallback"
-                    }
-                finally:
-                    try:
-                        conn.close()
-                    except:
-                        pass
-            else:
-                return {
-                    "status": "error", 
-                    "message": "Database connection failed"
-                }
+        except Exception as e:
+            print(f"Error holding movie data: {e}")
+            try:
+                conn.rollback()
+            except:
+                pass
+            return {
+                "status": "error",
+                "message": "Failed to hold movie data"
+            }
+        finally:
+            try:
+                conn.close()
+            except:
+                pass
 
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error in handle_movie_request: {e}")
+        print(f"Error in hold_movie_data: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.post("/api/v1/release_movie_data/{token}")
+@limiter.limit("60/minute")
+async def release_movie_data(request: Request, token: str):
+    """
+    ENDPOINT UNTUK BOT:
+    Dipanggil setelah bot terima /start
+    Mengembalikan data film yang ditahan dan update status
+    """
+    conn = get_db_connection()
+    if not conn:
+        raise HTTPException(status_code=500, detail="Database error")
+
+    try:
+        cur = conn.cursor()
+        
+        # Ambil data dari intermediary_queue
+        cur.execute(
+            """SELECT telegram_id, movie_id, movie_data, status 
+               FROM intermediary_queue 
+               WHERE start_token = %s 
+               AND expires_at > NOW() 
+               AND status = 'waiting_start';""",
+            (token,)
+        )
+        result = cur.fetchone()
+
+        if result:
+            telegram_id, movie_id, movie_data_json, status = result
+            
+            # Update status: bot sudah terima /start
+            cur.execute(
+                """UPDATE intermediary_queue 
+                   SET status = 'released_to_bot', 
+                       bot_received_start_at = NOW() 
+                   WHERE start_token = %s;""",
+                (token,)
+            )
+            conn.commit()
+            
+            # Log aktivitas
+            try:
+                cur.execute(
+                    "INSERT INTO activity_logs (telegram_id, action, movie_id, status, created_at) VALUES (%s, %s, %s, %s, NOW());",
+                    (telegram_id, "movie_released_to_bot", movie_id, "released")
+                )
+                conn.commit()
+            except Exception as e:
+                print(f"Error logging activity: {e}")
+
+            cur.close()
+            
+            import json
+            movie_data = json.loads(movie_data_json)
+            
+            return {
+                "valid": True,
+                "telegram_id": telegram_id,
+                "movie_id": movie_id,
+                "movie_data": movie_data,
+                "message": "Data film berhasil dilepas dari pelantara"
+            }
+        else:
+            cur.close()
+            return {
+                "valid": False,
+                "message": "Token tidak valid, expired, atau sudah diproses"
+            }
+
+    except Exception as e:
+        print(f"Error releasing movie data: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except:
+            pass
+
+# --- LEGACY ENDPOINT (untuk backward compatibility) ---
+@app.post("/api/v1/handle_movie_request")
+@limiter.limit("30/minute")
+async def handle_movie_request(request: Request, data: dict):
+    """
+    Legacy endpoint - redirect ke hold_movie_data
+    """
+    return await hold_movie_data(request, data)
 
 @app.get("/api/v1/pending/{token}")
 @limiter.limit("30/minute")
@@ -536,20 +655,37 @@ async def get_pending_action(request: Request, token: str):
 
 async def simulate_bot_send(telegram_id: int, movie_data: dict) -> bool:
     """
-    Simulasi pengiriman pesan via Bot API
-    Dalam implementasi real, panggil https://api.telegram.org/bot<token>/sendMessage
+    Kirim film ke user via Telegram Bot API
     """
     try:
-        # Di production, ini akan memanggil Telegram Bot API
-        # Untuk sekarang kita return True asumsi berhasil
-        # Jika gagal (misal bot belum di-start), return False
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        
+        message_text = f"""
+🎬 <b>{movie_data.get('title', 'Film')}</b>
 
-        # Simulate API call delay
-        import asyncio
-        await asyncio.sleep(0.1)
+Selamat menonton! 🍿
 
-        return True
-    except Exception:
+🔗 Link: {movie_data.get('video_link', '#')}
+"""
+        
+        payload = {
+            "chat_id": telegram_id,
+            "text": message_text,
+            "parse_mode": "HTML"
+        }
+        
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(url, json=payload)
+            
+            if response.status_code == 200:
+                print(f"✅ Film berhasil dikirim ke user {telegram_id}")
+                return True
+            else:
+                print(f"❌ Gagal kirim film ke user {telegram_id}: {response.status_code}")
+                return False
+                
+    except Exception as e:
+        print(f"❌ Error saat kirim film: {e}")
         return False
 
 # --- ENDPOINT UNTUK MENGURUS PENARIKAN REFERRAL ---
@@ -572,8 +708,8 @@ async def withdraw_referral(request: Request, data: dict):
 
         # Validasi tipe data
         try:
-            telegram_id = int(telegram_id)
-            jumlah = float(jumlah)
+            telegram_id = int(telegram_id) if telegram_id is not None else 0
+            jumlah = float(jumlah) if jumlah is not None else 0.0
         except (ValueError, TypeError):
             raise HTTPException(status_code=400, detail="Invalid data format")
 
