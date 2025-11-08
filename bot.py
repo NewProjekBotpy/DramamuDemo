@@ -5,6 +5,8 @@ import os
 import secrets
 import hashlib
 import hmac
+import httpx
+from typing import Optional
 from urllib.parse import parse_qs
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
@@ -18,25 +20,17 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "dramamu_bot")
 ADMIN_ID = os.environ.get("ADMIN_ID")
 
-BASE_URL = "https://dramamuid.netlify.app"
-URL_CARI_JUDUL = f"{BASE_URL}/drama.html"
+BASE_URL = "https://famous-semolina-e06e90.netlify.app"
+URL_CARI_JUDUL = f"{BASE_URL}/index.html"
 URL_BELI_VIP = f"{BASE_URL}/payment.html"
 URL_PROFILE = f"{BASE_URL}/profile.html"
 URL_REQUEST = f"{BASE_URL}/request.html"
 URL_REFERRAL = f"{BASE_URL}/referal.html"
 
 # ==========================================================
-# 📦 DATABASE CONFIG (POSTGRESQL)
+# 📦 DATABASE CONFIG (REPLIT)
 # ==========================================================
-DB_HOST = os.environ.get("DB_HOST")
-DB_PORT = os.environ.get("DB_PORT")
-DB_NAME = os.environ.get("DB_NAME")
-DB_USER = os.environ.get("DB_USER")
-DB_PASS = os.environ.get("DB_PASS")
-
-conn_string = None
-if DB_NAME and DB_USER and DB_HOST and DB_PORT and DB_PASS:
-    conn_string = f"dbname='{DB_NAME}' user='{DB_USER}' host='{DB_HOST}' port='{DB_PORT}' password='{DB_PASS}'"
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
 # ==========================================================
 # 🪵 LOGGING
@@ -55,11 +49,11 @@ logger = logging.getLogger("dramamu-bot")
 # 🧩 HELPER: DATABASE CONNECTION
 # ==========================================================
 def get_db_connection():
-    if not conn_string:
-        logger.error("DB connection string belum lengkap!")
+    if not DATABASE_URL:
+        logger.error("DATABASE_URL tidak tersedia!")
         return None
     try:
-        conn = psycopg2.connect(conn_string)
+        conn = psycopg2.connect(DATABASE_URL)
         return conn
     except Exception as e:
         logger.error(f"Gagal konek DB: {e}")
@@ -154,12 +148,12 @@ def check_vip_status(telegram_id: int) -> bool:
 # ==========================================================
 # 🎬 AMBIL DETAIL FILM (Dengan Error Handling Lengkap)
 # ==========================================================
-def get_movie_details(movie_id: int) -> dict:
+def get_movie_details(movie_id: int) -> Optional[dict]:
     conn = get_db_connection()
     if not conn:
         return None
 
-    movie = None
+    movie: Optional[dict] = None
     try:
         cur = conn.cursor()
         cur.execute("SELECT title, video_link, poster_url FROM movies WHERE id = %s;", (movie_id,))
@@ -294,6 +288,9 @@ async def send_movie_to_user(chat_id: int, movie: dict, context: ContextTypes.DE
 # 🚀 HANDLER /start DENGAN TOKEN SUPPORT
 # ==========================================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.effective_user or not update.message:
+        return
+    
     user_id = update.effective_user.id
     args = context.args
 
@@ -352,7 +349,72 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await handle_pending_action(user_id, context)
 
 async def handle_start_token(user_id: int, token: str, context: ContextTypes.DEFAULT_TYPE):
-    """Handle start token dari fallback link"""
+    """
+    Handle start token - SISTEM PELANTARA BARU
+    1. Bot terima /start dengan token
+    2. Panggil endpoint pelantara untuk ambil data yang ditahan
+    3. Kirim film ke user
+    """
+    try:
+        # Ambil backend URL dari environment
+        backend_url = os.environ.get("BACKEND_URL")
+        if not backend_url:
+            # Fallback ke REPLIT_DEV_DOMAIN
+            replit_domain = os.environ.get("REPLIT_DEV_DOMAIN")
+            if replit_domain:
+                backend_url = f"https://{replit_domain}"
+            else:
+                logger.error("BACKEND_URL dan REPLIT_DEV_DOMAIN tidak tersedia!")
+                return
+
+        # Panggil endpoint pelantara untuk release data
+        import httpx
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                f"{backend_url}/api/v1/release_movie_data/{token}"
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                if data.get("valid"):
+                    # Data valid, kirim film ke user
+                    movie_data = data.get("movie_data")
+                    telegram_id = data.get("telegram_id")
+                    
+                    if movie_data and telegram_id == user_id:
+                        success = await send_movie_to_user(user_id, movie_data, context)
+                        
+                        if success:
+                            logger.info(f"✅ Film berhasil dikirim dari pelantara ke user {user_id}")
+                            await context.bot.send_message(
+                                chat_id=user_id,
+                                text="✅ Film berhasil dikirim! Selamat menonton! 🍿"
+                            )
+                        else:
+                            logger.error(f"❌ Gagal kirim film ke user {user_id}")
+                            await context.bot.send_message(
+                                chat_id=user_id,
+                                text="❌ Maaf, terjadi kesalahan saat mengirim film. Silakan coba lagi."
+                            )
+                    else:
+                        logger.warning(f"Data tidak sesuai untuk user {user_id}")
+                else:
+                    logger.warning(f"Token tidak valid atau expired: {token}")
+                    # Fallback ke sistem lama (pending_actions)
+                    await handle_start_token_legacy(user_id, token, context)
+            else:
+                logger.error(f"Error response from backend: {response.status_code}")
+                # Fallback ke sistem lama
+                await handle_start_token_legacy(user_id, token, context)
+                
+    except Exception as e:
+        logger.error(f"Error handle start token pelantara: {e}")
+        # Fallback ke sistem lama jika ada error
+        await handle_start_token_legacy(user_id, token, context)
+
+async def handle_start_token_legacy(user_id: int, token: str, context: ContextTypes.DEFAULT_TYPE):
+    """Handle start token dari sistem lama (pending_actions) - Fallback"""
     conn = get_db_connection()
     if not conn:
         return
@@ -377,11 +439,11 @@ async def handle_start_token(user_id: int, token: str, context: ContextTypes.DEF
                         (user_id, token)
                     )
                     conn.commit()
-                    logger.info(f"Successfully processed pending action for user {user_id}, movie {movie_id}")
+                    logger.info(f"Successfully processed legacy pending action for user {user_id}, movie {movie_id}")
 
         cur.close()
     except Exception as e:
-        logger.error(f"Error handle start token: {e}")
+        logger.error(f"Error handle legacy start token: {e}")
         try:
             conn.rollback()
         except:
@@ -397,7 +459,7 @@ async def handle_start_token(user_id: int, token: str, context: ContextTypes.DEF
 # 📡 HANDLER WEBAPP DATA YANG DIPERBAIKI
 # ==========================================================
 async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.web_app_data:
+    if not update.message or not update.message.web_app_data or not update.effective_user:
         return
 
     user_id = update.effective_user.id
@@ -421,12 +483,10 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 text="⚠️ Aksi tidak dikenali."
             )
 
-    except json.JSONDecodeError as e:
-        logger.error(f"JSON decode error from user {user_id}: {e}")
-        await context.bot.send_message(
-            chat_id=user_id, 
-            text="❌ Data tidak valid."
-        )
+    except json.JSONDecodeError:
+        logger.info(f"Received plain string (transaction_id) from user {user_id}")
+        await handle_transaction_id(user_id, data_str, context)
+        
     except Exception as e:
         logger.error(f"Unexpected error in webapp handler for user {user_id}: {e}")
         await context.bot.send_message(
@@ -434,7 +494,88 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             text="❌ Terjadi kesalahan sistem."
         )
 
-async def handle_watch_action(user_id: int, data: dict, context: ContextTypes.DEFAULT_TYPE, update: Update = None):
+async def handle_transaction_id(user_id: int, transaction_id: str, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Handle transaction_id dari Mini App sendData()
+    AUTO-TRIGGER /start command tanpa klik manual
+    
+    Alur:
+    1. Terima transaction_id dari sendData()
+    2. Panggil backend untuk release data film
+    3. Kirim film ke user
+    """
+    try:
+        transaction_id = transaction_id.strip()
+        
+        if not transaction_id:
+            logger.warning(f"Empty transaction_id from user {user_id}")
+            return
+            
+        logger.info(f"Processing transaction_id {transaction_id} for user {user_id}")
+        
+        backend_url = os.environ.get("BACKEND_URL")
+        if not backend_url:
+            replit_domain = os.environ.get("REPLIT_DEV_DOMAIN")
+            if replit_domain:
+                backend_url = f"https://{replit_domain}"
+            else:
+                logger.error("BACKEND_URL dan REPLIT_DEV_DOMAIN tidak tersedia!")
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text="❌ Konfigurasi server error. Silakan hubungi admin."
+                )
+                return
+        
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                f"{backend_url}/api/v1/release_movie_data/{transaction_id}"
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                if data.get("valid"):
+                    movie_data = data.get("movie_data")
+                    telegram_id = data.get("telegram_id")
+                    
+                    if movie_data and telegram_id == user_id:
+                        success = await send_movie_to_user(user_id, movie_data, context)
+                        
+                        if success:
+                            logger.info(f"✅ Film berhasil dikirim via sendData ke user {user_id}")
+                        else:
+                            logger.error(f"❌ Gagal kirim film ke user {user_id}")
+                            await context.bot.send_message(
+                                chat_id=user_id,
+                                text="❌ Maaf, terjadi kesalahan saat mengirim film. Silakan coba lagi."
+                            )
+                    else:
+                        logger.warning(f"Data tidak sesuai untuk user {user_id}")
+                        await context.bot.send_message(
+                            chat_id=user_id,
+                            text="❌ Data tidak valid. Silakan coba lagi."
+                        )
+                else:
+                    logger.warning(f"Transaction ID tidak valid atau expired: {transaction_id}")
+                    await context.bot.send_message(
+                        chat_id=user_id,
+                        text="❌ Link sudah expired atau tidak valid. Silakan pilih film lagi."
+                    )
+            else:
+                logger.error(f"Error response from backend: {response.status_code}")
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text="❌ Terjadi kesalahan server. Silakan coba lagi."
+                )
+                
+    except Exception as e:
+        logger.error(f"Error handle transaction_id: {e}")
+        await context.bot.send_message(
+            chat_id=user_id,
+            text="❌ Terjadi kesalahan sistem. Silakan coba lagi."
+        )
+
+async def handle_watch_action(user_id: int, data: dict, context: ContextTypes.DEFAULT_TYPE, update: Optional[Update] = None):
     """Handle aksi nonton film dengan fallback mechanism"""
     try:
         movie_id = int(data.get("movie_id", 0))
@@ -448,7 +589,7 @@ async def handle_watch_action(user_id: int, data: dict, context: ContextTypes.DE
             return
 
         # Verifikasi init_data jika ada
-        if init_data and not verify_telegram_init_data(init_data, BOT_TOKEN):
+        if init_data and BOT_TOKEN and not verify_telegram_init_data(init_data, BOT_TOKEN):
             logger.warning(f"Invalid init_data from user {user_id}")
             await context.bot.send_message(
                 chat_id=user_id, 
@@ -617,7 +758,7 @@ async def handle_withdraw_action(user_id: int, data: dict, context: ContextTypes
 async def ai_agent_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         msg = update.effective_message
-        if not msg or not msg.text or msg.web_app_data:
+        if not msg or not msg.text or msg.web_app_data or not update.effective_user or not update.effective_chat:
             return
 
         user_msg = msg.text.strip()
@@ -647,7 +788,7 @@ async def ai_agent_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==========================================================
 # ⚠️ GLOBAL ERROR HANDLER
 # ==========================================================
-async def global_error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def global_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     error_msg = f"Global error: {context.error}"
     logger.error(error_msg, exc_info=context.error)
 
