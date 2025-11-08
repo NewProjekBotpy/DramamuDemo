@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.pyc
+*.log
+
+# Virtual Environment & Dependencies
+.pythonlibs/
+.upm/
+.cache/
+.local/
+env/
+venv/
+
+# Environment Variables
+.env
+
+# Replit
+.breakpoints
+.replit_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Backup & Temporary
+Ini backup/
+*.bak
+*.tmp
+
+# Large Media Files
+poster.jpg
