@@ -16,7 +16,7 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 import httpx
 
-# --- DATA KONEKSI DATABASE (REPLIT) ---
+# --- DATA KONEKSI DATABASE ---
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
 # --- INFO MIDTRANS ---
