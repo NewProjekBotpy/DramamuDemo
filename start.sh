@@ -33,9 +33,6 @@ echo ""
 if [ -n "$RAILWAY_PUBLIC_DOMAIN" ]; then
     echo "💡 Backend URL: https://$RAILWAY_PUBLIC_DOMAIN"
     echo "🧪 Health check: https://$RAILWAY_PUBLIC_DOMAIN/health"
-elif [ -n "$REPLIT_DEV_DOMAIN" ]; then
-    echo "💡 Backend URL: https://$REPLIT_DEV_DOMAIN"
-    echo "🧪 Health check: https://$REPLIT_DEV_DOMAIN/health"
 else
     echo "💡 Backend running on port: $BACKEND_PORT"
     echo "🧪 Health check: http://localhost:$BACKEND_PORT/health"
