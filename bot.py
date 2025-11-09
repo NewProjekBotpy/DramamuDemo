@@ -20,7 +20,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "dramamu_bot")
 ADMIN_ID = os.environ.get("ADMIN_ID")
 
-BASE_URL = "https://famous-semolina-e06e90.netlify.app"
+BASE_URL = os.environ.get("FRONTEND_URL", "https://famous-semolina-e06e90.netlify.app")
 URL_CARI_JUDUL = f"{BASE_URL}/index.html"
 URL_BELI_VIP = f"{BASE_URL}/payment.html"
 URL_PROFILE = f"{BASE_URL}/profile.html"
@@ -359,13 +359,18 @@ async def handle_start_token(user_id: int, token: str, context: ContextTypes.DEF
         # Ambil backend URL dari environment
         backend_url = os.environ.get("BACKEND_URL")
         if not backend_url:
-            # Fallback ke REPLIT_DEV_DOMAIN
-            replit_domain = os.environ.get("REPLIT_DEV_DOMAIN")
-            if replit_domain:
-                backend_url = f"https://{replit_domain}"
+            # Fallback ke RAILWAY_PUBLIC_DOMAIN (prioritas untuk production)
+            railway_domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN")
+            if railway_domain:
+                backend_url = f"https://{railway_domain}"
             else:
-                logger.error("BACKEND_URL dan REPLIT_DEV_DOMAIN tidak tersedia!")
-                return
+                # Fallback ke REPLIT_DEV_DOMAIN (untuk development)
+                replit_domain = os.environ.get("REPLIT_DEV_DOMAIN")
+                if replit_domain:
+                    backend_url = f"https://{replit_domain}"
+                else:
+                    logger.error("BACKEND_URL, RAILWAY_PUBLIC_DOMAIN, dan REPLIT_DEV_DOMAIN tidak tersedia!")
+                    return
 
         # Panggil endpoint pelantara untuk release data
         import httpx
@@ -515,16 +520,22 @@ async def handle_transaction_id(user_id: int, transaction_id: str, context: Cont
         
         backend_url = os.environ.get("BACKEND_URL")
         if not backend_url:
-            replit_domain = os.environ.get("REPLIT_DEV_DOMAIN")
-            if replit_domain:
-                backend_url = f"https://{replit_domain}"
+            # Fallback ke RAILWAY_PUBLIC_DOMAIN (prioritas untuk production)
+            railway_domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN")
+            if railway_domain:
+                backend_url = f"https://{railway_domain}"
             else:
-                logger.error("BACKEND_URL dan REPLIT_DEV_DOMAIN tidak tersedia!")
-                await context.bot.send_message(
-                    chat_id=user_id,
-                    text="❌ Konfigurasi server error. Silakan hubungi admin."
-                )
-                return
+                # Fallback ke REPLIT_DEV_DOMAIN (untuk development)
+                replit_domain = os.environ.get("REPLIT_DEV_DOMAIN")
+                if replit_domain:
+                    backend_url = f"https://{replit_domain}"
+                else:
+                    logger.error("BACKEND_URL, RAILWAY_PUBLIC_DOMAIN, dan REPLIT_DEV_DOMAIN tidak tersedia!")
+                    await context.bot.send_message(
+                        chat_id=user_id,
+                        text="❌ Konfigurasi server error. Silakan hubungi admin."
+                    )
+                    return
         
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(
